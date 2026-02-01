@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
             .blocklist_function("esp_log_writev")
             .blocklist_type("pcnt_unit_t") // Fix for struct pcnt_unit_t vs enum pcnt_unit_t
             .clang_args(build_output.components.clang_args())
-            .clang_args(vec![
+            .clang_args([
                 "-target",
                 if mcu != "esp32" && mcu != "esp32s2" && mcu != "esp32s3" {
                     // Necessary to pass explicitly, because of https://github.com/rust-lang/rust-bindgen/issues/1555
@@ -143,6 +143,7 @@ fn main() -> anyhow::Result<()> {
             .config
             .native
             .combined_bindings_headers()?
+            .header_paths
             .into_iter()
             .inspect(|h| cargo::track_file(h)),
     );
@@ -163,17 +164,37 @@ fn main() -> anyhow::Result<()> {
         let mut output_file =
             BufWriter::new(fs::File::options().append(true).open(&bindings_file)?);
 
-        for (module_name, headers) in build_output.config.native.module_bindings_headers()? {
-            let bindings = configure_bindgen(build_output.bindgen.clone().builder()?)?
-                .path_headers(headers.into_iter().inspect(|h| cargo::track_file(h)))?
-                .generate()?;
+        for (module_name, binding_def) in build_output.config.native.module_bindings_headers()? {
+            if !binding_def.header_paths.is_empty() {
+                println!("******* c {:?}", &module_name);
+                let bindings = configure_bindgen(build_output.bindgen.clone().builder()?)?
+                    .path_headers(binding_def.header_paths.into_iter().inspect(|h| cargo::track_file(h)))?;
+                let bindings = bindings.generate()?;
 
-            writeln!(
-                &mut output_file,
-                "pub mod {module_name} {{\
-                     {bindings}\
-                 }}"
-            )?;
+                writeln!(
+                    &mut output_file,
+                    "pub mod {module_name} {{\
+                        {bindings}\
+                    }}"
+                )?;
+            }
+            if !binding_def.cpp_header_paths.is_empty() {
+                println!("******* cpp {:?}", &module_name);
+                let mut bindings = configure_bindgen(build_output.bindgen.clone().cpp_builder()?)?
+                    .clang_arg("-std=c++20")
+                    .path_headers(binding_def.cpp_header_paths.into_iter().inspect(|h| cargo::track_file(h)))?;
+                for allow_item in binding_def.cpp_allow_items {
+                    bindings = bindings.allowlist_item(allow_item);
+                }
+                let bindings = bindings.generate()?;
+
+                writeln!(
+                    &mut output_file,
+                    "pub mod {module_name} {{\
+                        {bindings}\
+                    }}"
+                )?;
+            }
         }
         Ok(())
     })()

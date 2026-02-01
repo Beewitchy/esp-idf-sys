@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(any(feature = "native", not(feature = "pio")))]
+use std::fmt::DebugMap;
 use std::fmt::Write;
 use std::path::PathBuf;
 
@@ -29,6 +31,15 @@ pub const DEFAULT_CMAKE_GENERATOR: cmake::Generator = {
         cmake::Generator::Ninja
     }
 };
+
+#[derive(Default, Clone)]
+pub struct BindingDef {
+    pub header_paths: Vec<PathBuf>,
+    // todo: ellie (02.02.2026) - implement allow_items for c headers
+
+    pub cpp_header_paths: Vec<PathBuf>,
+    pub cpp_allow_items: Vec<String>,
+}
 
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(default)]
@@ -180,8 +191,8 @@ impl NativeConfig {
     ///
     /// This method will validate that all returned C header files exist.
     #[cfg(any(feature = "native", not(feature = "pio")))]
-    pub fn combined_bindings_headers(&self) -> Result<Vec<PathBuf>> {
-        let mut results = Vec::new();
+    pub fn combined_bindings_headers(&self) -> Result<BindingDef> {
+        let mut result = BindingDef::default();
         for comp in &self.extra_components {
             // Skip all extra components with separate bindings.
             if comp.bindings_module.is_some() {
@@ -197,10 +208,17 @@ impl NativeConfig {
                         header_path.display(), comp.manifest_dir.display()
                     );
                 }
-                results.push(header_path);
+                if comp.cpp_binding.unwrap_or(false) {
+                    result.cpp_header_paths.push(header_path);
+                    if let Some(allow_items) = &comp.allow_items {
+                        result.cpp_allow_items.extend(allow_items.iter().cloned());
+                    }
+                } else {
+                    result.header_paths.push(header_path);
+                }
             }
         }
-        Ok(results)
+        Ok(result)
     }
 
     /// Get all bindings C headers grouped by the [`ExtraComponent::bindings_module`] name.
@@ -208,7 +226,7 @@ impl NativeConfig {
     /// This method will validate that all returned C header files exist and also that the
     /// module name only contains ACII alphanumeric and `_` characters.
     #[cfg(any(feature = "native", not(feature = "pio")))]
-    pub fn module_bindings_headers(&self) -> Result<HashMap<&str, Vec<PathBuf>>> {
+    pub fn module_bindings_headers(&self) -> Result<HashMap<&str, BindingDef>> {
         let headers = self.extra_components.iter().filter_map(|comp| {
             match (&comp.bindings_header, &comp.bindings_module) {
                 (Some(header), Some(module)) => {
@@ -217,7 +235,7 @@ impl NativeConfig {
                 _ => None,
             }
         });
-        let mut map = HashMap::<&str, Vec<PathBuf>>::new();
+        let mut map = HashMap::<&str, BindingDef>::new();
 
         for (header_path, module_name, comp) in headers {
             if !header_path.exists() {
@@ -227,8 +245,17 @@ impl NativeConfig {
                     comp.manifest_dir.display()
                 );
             }
+
             validate_module_name(module_name, comp)?;
-            map.entry(module_name).or_default().push(header_path);
+            let entry = map.entry(module_name).or_default();
+            if comp.cpp_binding.unwrap_or(false) {
+                entry.cpp_header_paths.push(header_path);
+                if let Some(allow_items) = &comp.allow_items {
+                    entry.cpp_allow_items.extend(allow_items.iter().cloned());
+                }
+            } else {
+                entry.header_paths.push(header_path);
+            }
         }
         Ok(map)
     }
@@ -379,6 +406,14 @@ pub struct ExtraComponent {
     /// **This field is optional.**
     #[serde(default)]
     pub bindings_header: Option<PathBuf>,
+
+    /// Enable c++ mode when generating bindings for this header
+    #[serde(default)]
+    pub cpp_binding: Option<bool>,
+
+    /// Add items to the allowlist used by Bindgen
+    #[serde(default)]
+    pub allow_items: Option<Vec<String>>,
 
     /// If this field is present, the component bindings will be generated separately from
     /// the `esp-idf` bindings and put into their own module inside the `esp-idf-sys` crate.
