@@ -514,18 +514,19 @@ pub fn build() -> Result<EspIdfBuildOutput> {
             bail!("Could not read build information from cmake: Target 'libespidf.elf' not found")
         })?;
 
-    let compiler = replies
+    let cmake_compiler = replies
         .get_toolchains()
         .and_then(|mut t| {
             t.take(Language::C)
                 .ok_or_else(|| Error::msg("No C toolchain"))
         })
-        .and_then(|t| {
-            t.compiler
-                .path
-                .ok_or_else(|| Error::msg("No compiler path set"))
-        })
+        .and_then(|t| Ok(t.compiler))
         .context("Could not determine the compiler from cmake")?;
+
+    let compiler = cmake_compiler
+        .path
+        .ok_or_else(|| Error::msg("No compiler path set"))
+        .context("Could not determine the compiler path from cmake")?;
 
     let build_info = espidf::EspIdfBuildInfo {
         esp_idf_dir: idf.esp_idf_dir.path().to_owned(),
@@ -593,10 +594,31 @@ pub fn build() -> Result<EspIdfBuildOutput> {
             build::LinkArgsBuilder::try_from(&target.link.unwrap())?
                 .linker(custom_linker.as_ref().unwrap_or(&compiler))
                 .working_directory(&cmake_build_dir)
-                .force_ldproxy(true)
+                .force_ldproxy(false)
                 .build()?,
         ),
-        bindgen: bindgen::Factory::from_cmake(&target.compile_groups[0])?.with_linker(&compiler),
+        bindgen: bindgen::Factory::from_cmake(&target.compile_groups[0]).and_then(|factory| {
+            if factory.sysroot.is_some() {
+                Ok(factory)
+            } else {
+                let compiler_sysroot_guess = compiler
+                    .clone()
+                    .pop_times(2)
+                    .join(path_buf!("lib", "clang-runtimes"))
+                    .join(
+                        cmake_compiler
+                            .target
+                            .unwrap_or_else(|| "xtensa-esp-unknown-elf".into()),
+                    )
+                    .join(chip.to_string());
+                println!("******* sysroot guess: {compiler_sysroot_guess:?}");
+                if compiler_sysroot_guess.is_dir() {
+                    Ok(factory.with_sysroot(compiler_sysroot_guess))
+                } else {
+                    Ok(factory.with_linker(&compiler))
+                }
+            }
+        })?,
         components: EspIdfComponents::from(components),
         kconfig_args: Box::new(
             kconfig::try_from_json_file(sdkconfig_json.clone())

@@ -153,6 +153,6 @@ impl Chip {
     }
 
     pub fn cmake_toolchain_file(self) -> String {
-        format!("toolchain-{self}.cmake")
+        format!("toolchain-clang-{self}.cmake")
     }
 }

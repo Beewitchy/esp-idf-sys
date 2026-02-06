@@ -29,19 +29,7 @@ use native as build_driver;
 use pio as build_driver;
 
 #[derive(Debug)]
-struct BindgenCallbacks
-{
-    pub cpp: bool,
-}
-
-impl BindgenCallbacks
-{
-    pub fn new(cpp: bool) -> Self {
-        BindgenCallbacks {
-            cpp: cpp,
-        }
-    }
-}
+struct BindgenCallbacks;
 
 impl ParseCallbacks for BindgenCallbacks {
     fn int_macro(&self, name: &str, _value: i64) -> Option<IntKind> {
@@ -110,9 +98,9 @@ fn main() -> anyhow::Result<()> {
 
     // Because we have multiple bindgen invocations and we can't clone a bindgen::Builder,
     // we have to set the options every time.
-    let configure_bindgen = |bindgen: embuild::bindgen::types::Builder, cpp: bool| {
+    let configure_bindgen = |bindgen: embuild::bindgen::types::Builder| {
         Ok(bindgen
-            .parse_callbacks(Box::new(BindgenCallbacks::new(cpp)))
+            .parse_callbacks(Box::new(BindgenCallbacks))
             .use_core()
             .enable_function_attribute_detection()
             .clang_arg("-DESP_PLATFORM")
@@ -160,7 +148,7 @@ fn main() -> anyhow::Result<()> {
             .inspect(|h| cargo::track_file(h)),
     );
 
-    configure_bindgen(build_output.bindgen.clone().builder()?, false)?
+    configure_bindgen(build_output.bindgen.clone().builder()?)?
         .path_headers(headers)?
         .generate()
         .with_context(bindgen_err)?
@@ -178,8 +166,7 @@ fn main() -> anyhow::Result<()> {
 
         for (module_name, binding_def) in build_output.config.native.module_bindings_headers()? {
             if !binding_def.header_paths.is_empty() {
-                println!("******* c {:?}", &module_name);
-                let bindings = configure_bindgen(build_output.bindgen.clone().builder()?, false)?
+                let bindings = configure_bindgen(build_output.bindgen.clone().builder()?)?
                     .path_headers(binding_def.header_paths.into_iter().inspect(|h| cargo::track_file(h)))?;
                 let bindings = bindings.generate()?;
 
@@ -191,8 +178,7 @@ fn main() -> anyhow::Result<()> {
                 )?;
             }
             if !binding_def.cpp_header_paths.is_empty() {
-                println!("******* cpp {:?}", &module_name);
-                let mut bindings = configure_bindgen(build_output.bindgen.clone().cpp_builder()?, true)?
+                let mut bindings = configure_bindgen(build_output.bindgen.clone().cpp_builder()?)?
                     .clang_arg("-std=c++20")
                     .path_headers(binding_def.cpp_header_paths.into_iter().inspect(|h| cargo::track_file(h)))?;
                 for allow_item in binding_def.cpp_allow_items {
@@ -200,6 +186,13 @@ fn main() -> anyhow::Result<()> {
                 }
                 let bindings = bindings.generate()?;
 
+                // writeln!(
+                //     &mut output_file,
+                //     "pub mod {module_name} {{\
+                //         {bindings}\
+                //     }}"
+                // )?;
+                // GCC support hack:
                 writeln!(
                     &mut output_file,
                     "pub mod {module_name} {{\
